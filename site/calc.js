@@ -7,6 +7,10 @@
  *   特約なし: 元本 × 年利 × (年 + 平年日÷365 + 閏年日÷366)
  *   年365日日割: 元本 × 年利 × 総日数÷365
  *
+ * 端数処理（円未満切り捨て）は BigInt の整数演算で厳密に行う。
+ *   浮動小数点のままだと、例えば 1,137,049.4 + 258,561.9 + 12,426.7 が
+ *   1,408,037.999… になって切り捨てで1円少なくなる。amount* は表示用。
+ *
  * Copyright (c) 2026 Lean Tech Library
  * License: AGPL-3.0
  * Source: https://github.com/leantechlibrary-coder/LTL-Delay-Interest-Calc
@@ -95,6 +99,18 @@
     const [int_, frac] = s.split(".");
     const grouped = int_.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
     return (neg ? "-" : "") + grouped + "." + frac;
+  }
+
+  // ---- 厳密な切り捨て（整数演算） ----
+  // 年利は 10^6 分の整数に戻す（画面の利率は％で小数4桁まで → 年利で小数6桁まで）
+  const RATE_DEN = 1000000n;
+  function rateNum(rate) {
+    return BigInt(Math.round(rate * 1000000));
+  }
+  // floor(元本 × 年利 × 日数 × scale ÷ 分母)。元本・日数は非負の整数
+  function floorTerm(principal, rate, days, denom, scale) {
+    const n = BigInt(Math.round(principal)) * rateNum(rate) * BigInt(days) * BigInt(scale);
+    return Number(n / (RATE_DEN * BigInt(denom)));
   }
 
   // ---- エンジン本体（calc_engine.py と同一構造・同一演算順序） ----
@@ -186,7 +202,7 @@
       const amountTotal = principal * rate * totalDays / 365;
       details.push("【計算方法: 年365日日割特約（閏年無視）】");
       details.push(`  ${fmtYen(principal)} × ${rateText}% × ${totalDays}/365 = ${fmtNum1(amountTotal)}`);
-      const delayInterest = Math.floor(amountTotal);
+      const delayInterest = floorTerm(principal, rate, totalDays, 365, 1);
       details.push(`  遅延損害金: ${fmtYen(delayInterest)}円`);
       details.push(`  合計振込額: ${fmtYen(principal + delayInterest)}円`);
 
@@ -233,9 +249,9 @@
 
     let delayInterest;
     if (truncateEach) {
-      const fy = Math.floor(amountYears);
-      const fn = Math.floor(amountNormal);
-      const fl = Math.floor(amountLeap);
+      const fy = floorTerm(principal, rate, fullYears, 1, 1);
+      const fn = floorTerm(principal, rate, normalDays, 365, 1);
+      const fl = floorTerm(principal, rate, leapDays, 366, 1);
       delayInterest = fy + fn + fl;
       details.push("");
       const parts = [];
@@ -245,11 +261,13 @@
       details.push(`  各区間切り捨て: ${parts.join(" + ")}`);
     } else {
       // 東京地裁執行部方式: 各区間を小数第2位切り捨て → 合算 → 円未満切り捨て
-      const ry = Math.floor(amountYears * 10) / 10;
-      const rn = Math.floor(amountNormal * 10) / 10;
-      const rl = Math.floor(amountLeap * 10) / 10;
-      const rawTotal = ry + rn + rl;
-      delayInterest = Math.floor(rawTotal);
+      // 各区間を10倍した整数（＝小数1位まで）で持って合算し、最後に10で割って切り捨て
+      const ty = floorTerm(principal, rate, fullYears, 1, 10);
+      const tn = floorTerm(principal, rate, normalDays, 365, 10);
+      const tl = floorTerm(principal, rate, leapDays, 366, 10);
+      const ry = ty / 10, rn = tn / 10, rl = tl / 10;
+      const rawTotal = (ty + tn + tl) / 10;
+      delayInterest = Math.floor((ty + tn + tl) / 10);
       details.push("");
       const parts = [];
       if (fullYears > 0) parts.push(`①${fmtNum1(ry)}`);

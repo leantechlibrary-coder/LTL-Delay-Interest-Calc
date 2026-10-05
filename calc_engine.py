@@ -11,6 +11,11 @@
   初日不算入: 翌日を起算日とする。
   端数期間の暦年分割: 最初のセグメントは起算日含む(+1)、
                      以降は年初からのdate diff。
+
+端数処理（円未満切り捨て）は有理数（Fraction）で厳密に行う。
+  浮動小数点のままだと、例えば 1,137,049.4 + 258,561.9 + 12,426.7 が
+  1,408,037.999… になって切り捨てで1円少なくなる。
+  CalcResult の amount_* は表示用の float（値は厳密計算と同じものを float にしたもの）。
 """
 
 from dataclasses import dataclass
@@ -18,6 +23,7 @@ from datetime import date, timedelta
 from dateutil.relativedelta import relativedelta
 import calendar
 import math
+from fractions import Fraction
 
 
 @dataclass
@@ -39,6 +45,11 @@ class CalcResult:
     delay_interest: int
     total_payment: int
     detail_text: str
+
+
+def exact_rate(rate: float) -> Fraction:
+    """年利（小数）を有理数に戻す。画面の利率は小数4桁まで（％）なので、分母 10**6 以内で元の値に戻る"""
+    return Fraction(rate).limit_denominator(10**6)
 
 
 def is_leap_year(year: int) -> bool:
@@ -124,11 +135,14 @@ def calculate(
 
     full_years, remainder_start = count_full_years(effective_start, end_date)
 
+    r = exact_rate(rate)
+
     if not consider_leap:
-        amount_total = principal * rate * total_days / 365
+        exact_total = Fraction(principal) * r * total_days / 365
+        amount_total = float(exact_total)
         details.append("【計算方法: 年365日日割特約（閏年無視）】")
         details.append(f"  {principal:,} × {rate} × {total_days}/365 = {amount_total:,.1f}")
-        delay_interest = math.floor(amount_total)
+        delay_interest = math.floor(exact_total)
         details.append(f"  遅延損害金: {delay_interest:,}円")
         details.append(f"  合計振込額: {principal + delay_interest:,}円")
 
@@ -147,9 +161,12 @@ def calculate(
 
     else:
         normal_days, leap_days = split_days_by_leap(remainder_start, end_date)
-        amount_years = principal * rate * full_years
-        amount_normal = principal * rate * normal_days / 365 if normal_days > 0 else 0.0
-        amount_leap = principal * rate * leap_days / 366 if leap_days > 0 else 0.0
+        exact_years = Fraction(principal) * r * full_years
+        exact_normal = Fraction(principal) * r * normal_days / 365
+        exact_leap = Fraction(principal) * r * leap_days / 366
+        amount_years = float(exact_years)
+        amount_normal = float(exact_normal)
+        amount_leap = float(exact_leap)
 
         details.append("【計算方法: 特約なし（端数期間暦年閏年説）】")
         details.append(f"  年に満つる期間: {full_years}年")
@@ -175,9 +192,9 @@ def calculate(
 
         if truncate_each:
             # 各区間ごとに円未満切り捨て（謙抑的方式）
-            fy = math.floor(amount_years)
-            fn = math.floor(amount_normal)
-            fl = math.floor(amount_leap)
+            fy = math.floor(exact_years)
+            fn = math.floor(exact_normal)
+            fl = math.floor(exact_leap)
             delay_interest = fy + fn + fl
             details.append("")
             parts = []
@@ -189,11 +206,12 @@ def calculate(
             # 東京地裁執行部方式:
             # 各区間を小数点第2位で切り捨て（小数点1位まで残す）→
             # 合算 → 小数点第1位以下を切り捨て
-            ry = math.floor(amount_years * 10) / 10
-            rn = math.floor(amount_normal * 10) / 10
-            rl = math.floor(amount_leap * 10) / 10
+            ry = Fraction(math.floor(exact_years * 10), 10)
+            rn = Fraction(math.floor(exact_normal * 10), 10)
+            rl = Fraction(math.floor(exact_leap * 10), 10)
             raw_total = ry + rn + rl
             delay_interest = math.floor(raw_total)
+            ry, rn, rl, raw_total = float(ry), float(rn), float(rl), float(raw_total)
             details.append("")
             parts = []
             if full_years > 0: parts.append(f"①{ry:,.1f}")
