@@ -5,7 +5,7 @@
 ```
 site/
 ├── index.html            画面本体（CSS込み）
-├── calc.js               計算エンジン（Python版と数値完全一致を検証済み）
+├── calc.js               計算エンジン（calc_engine.py と同じ結果・同じ明細文）
 ├── app.js                UI ロジック
 ├── sw.js                 Service Worker（ネットワーク優先＋オフライン対応）
 ├── manifest.webmanifest  PWAマニフェスト
@@ -15,6 +15,10 @@ site/
 
 サーバー処理なし・ビルド不要の静的サイト。計算はすべて端末内で完結し、
 データの送信・保存は一切行わない。
+
+`_headers` は Cloudflare Pages 専用。他のホスティングでは効かないので、
+同じヘッダ（X-Content-Type-Options、X-Frame-Options など）をそのサービスの方法で設定する。
+Content-Security-Policy は index.html に書いてあるため、どのホスティングでも有効。
 
 ## Cloudflare Pages へのデプロイ
 
@@ -38,10 +42,13 @@ Workers & Pages → Create → Pages → **Upload assets** → このフォル�
 
 ## 更新時のチェックリスト（重要）
 
+計算ロジックを変更したら、`calc_engine.py`（デスクトップ版）にも同じ変更を入れ、
+リポジトリ直下で `python tests/check_engines.py` を実行して一致を確認する。
+
 計算ロジック・画面を変更したら、**必ず両方のバージョンを上げる**:
 
-1. `app.js` の `APP_VERSION = "1.3.2"` → 新バージョンへ
-2. `sw.js` の `CACHE_VERSION = "entai-calc-v1.3.2"` → 同じ番号へ
+1. `app.js` の `APP_VERSION = "1.4.0"` → 新バージョンへ
+2. `sw.js` の `CACHE_VERSION = "entai-calc-v1.4.0"` → 同じ番号へ
 
 CACHE_VERSION を上げ忘れても、Service Worker はネットワーク優先方式のため
 オンライン利用者には新版が届くが、番号を揃えておくことで旧キャッシュが
@@ -53,12 +60,12 @@ CACHE_VERSION を上げ忘れても、Service Worker はネットワーク優先
 画面フッターと情報ダイアログに GitHub リポジトリへのリンクを設置済みなので、
 **公開リポジトリにこの PWA 版のソースも含めること**（site/ をそのまま置けば足りる）。
 
-## 検証済み事項（2026-11-13・v1.3.2）
+## 検証済み事項（2026-11-13・v1.4.0）
 
-- 計算エンジン: Python 版（calc_engine.py）と calc.js が 199,872 ケースで
-  全項目（年数・平年日数・閏年日数・総日数・遅延損害金・合計額）完全一致。
-  年数・日数は、1日ずつ数える別実装とも全ケース一致
-  - 応当日とその前日の支払、2/29 開始、閏年跨ぎ、長期、両端数処理方式を含む
-- UI: ブラウザで計算・和暦/西暦入力・利率の入力チェック・情報ダイアログ・
-  Service Worker 登録・オフライン再読込を確認（CSP 違反・コンソールエラーなし）
-- 検証スクリプトはリポジトリに含めていない
+- 計算エンジン: `python tests/check_engines.py` で
+  - 手計算の代表例 9 件と一致
+  - 年数・日数が、1日ずつ数える別実装と 200,448 ケースで一致
+  - calc.js と calc_engine.py が 200,448 ケースで全項目・明細文まで一致
+- UI: ブラウザで計算・和暦/西暦入力と切替時の年換算・元号の範囲チェック・
+  元本と利率の上限・起算日当日の支払・クリア・Service Worker を確認
+  （CSP 違反・コンソールエラーなし）

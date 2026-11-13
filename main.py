@@ -12,18 +12,25 @@ from PyQt6.QtWidgets import (
     QButtonGroup, QTextEdit, QGroupBox, QMessageBox,
     QComboBox, QSpinBox, QDialog
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QIntValidator, QDoubleValidator, QAction
+from PyQt6.QtCore import Qt, pyqtSignal, QRegularExpression
+from PyQt6.QtGui import QFont, QRegularExpressionValidator, QAction
 
 from calc_engine import calculate
 
+APP_VERSION = "1.1.0"
 
-# 元号定義: (名前, 開始日, 西暦オフセット)
+
+# 元号定義: (名前, 開始日, 西暦オフセット)。新しい順
 ERAS = [
     ("令和", date(2019, 5, 1), 2018),
     ("平成", date(1989, 1, 8), 1988),
     ("昭和", date(1926, 12, 25), 1925),
 ]
+SEIREKI = "西暦"
+
+# 入力の上限（Web版 site/app.js と同じ値）
+MAX_PRINCIPAL = 999_999_999_999
+MAX_RATE_PERCENT = 100
 
 
 def one_year_before(d: date) -> date:
@@ -35,23 +42,28 @@ def one_year_before(d: date) -> date:
 
 
 def wareki_to_seireki(era_name: str, wy: int) -> int:
-    """和暦年 → 西暦年"""
+    """和暦年 → 西暦年（西暦はそのまま）"""
     for name, _, offset in ERAS:
         if name == era_name:
             return wy + offset
-    return 2025
+    return wy
 
 
 def seireki_to_wareki(d: date) -> tuple[str, int]:
-    """西暦date → (元号名, 和暦年)"""
+    """西暦date → (元号名, 和暦年)。昭和より前は (西暦, 西暦年)"""
     for name, start, offset in ERAS:
         if d >= start:
             return name, d.year - offset
-    return "昭和", d.year - 1925
+    return SEIREKI, d.year
+
+
+def in_era(era_name: str, d: date) -> bool:
+    """d がその元号の期間内か（例: 令和1年1月1日は平成なので False）"""
+    return era_name == SEIREKI or seireki_to_wareki(d)[0] == era_name
 
 
 class WarekiDateWidget(QWidget):
-    """和暦入力ウィジェット: [元号▼][年][月][日] (西暦表示)"""
+    """日付入力ウィジェット: [元号/西暦▼][年][月][日] (確認表示)"""
 
     dateChanged = pyqtSignal()
 
@@ -66,15 +78,14 @@ class WarekiDateWidget(QWidget):
 
         # 元号コンボボックス
         self.era_combo = QComboBox()
-        self.era_combo.addItems([e[0] for e in ERAS])
+        self.era_combo.addItems([e[0] for e in ERAS] + [SEIREKI])
         self.era_combo.setFixedWidth(70)
         layout.addWidget(self.era_combo)
 
         # 年
         self.year_spin = QSpinBox()
-        self.year_spin.setRange(1, 99)
         self.year_spin.setSuffix("年")
-        self.year_spin.setFixedWidth(65)
+        self.year_spin.setFixedWidth(80)
         layout.addWidget(self.year_spin)
 
         # 月
@@ -91,7 +102,7 @@ class WarekiDateWidget(QWidget):
         self.day_spin.setFixedWidth(55)
         layout.addWidget(self.day_spin)
 
-        # 西暦確認ラベル
+        # 確認ラベル（和暦入力時は西暦、西暦入力時は和暦を表示）
         self.seireki_label = QLabel()
         self.seireki_label.setStyleSheet("color: #666; font-size: 11px; margin-left: 4px;")
         layout.addWidget(self.seireki_label)
@@ -99,11 +110,12 @@ class WarekiDateWidget(QWidget):
         layout.addStretch()
 
         # 初期値設定
+        self._era = self.era_combo.currentText()
         self.set_date(initial_date)
 
         # シグナル接続
         # 年・元号が変わると2月の日数（閏年）も変わるので、月と同じく日の上限を更新する
-        self.era_combo.currentIndexChanged.connect(self._on_month_changed)
+        self.era_combo.currentIndexChanged.connect(self._on_era_changed)
         self.year_spin.valueChanged.connect(self._on_month_changed)
         self.month_spin.valueChanged.connect(self._on_month_changed)
         self.day_spin.valueChanged.connect(self._on_value_changed)
@@ -112,8 +124,9 @@ class WarekiDateWidget(QWidget):
         """dateオブジェクトでウィジェットの値を設定"""
         self._block_signals(True)
         era_name, wy = seireki_to_wareki(d)
-        idx = next((i for i, e in enumerate(ERAS) if e[0] == era_name), 0)
-        self.era_combo.setCurrentIndex(idx)
+        self.era_combo.setCurrentText(era_name)
+        self._era = era_name
+        self._update_year_range()
         self.year_spin.setValue(wy)
         self.month_spin.setValue(d.month)
         self._update_day_range()
@@ -122,15 +135,16 @@ class WarekiDateWidget(QWidget):
         self._update_seireki_label()
         self.dateChanged.emit()
 
+    def _seireki_year(self) -> int:
+        return wareki_to_seireki(self.era_combo.currentText(), self.year_spin.value())
+
     def get_date(self) -> date | None:
-        """現在の入力値からdateを返す。無効な日付ならNone"""
+        """現在の入力値からdateを返す。存在しない日付・元号の範囲外ならNone"""
         try:
-            era_name = self.era_combo.currentText()
-            wy = self.year_spin.value()
-            sy = wareki_to_seireki(era_name, wy)
-            return date(sy, self.month_spin.value(), self.day_spin.value())
+            d = date(self._seireki_year(), self.month_spin.value(), self.day_spin.value())
         except ValueError:
             return None
+        return d if in_era(self.era_combo.currentText(), d) else None
 
     def _on_value_changed(self):
         self._update_seireki_label()
@@ -141,24 +155,38 @@ class WarekiDateWidget(QWidget):
         self._update_seireki_label()
         self.dateChanged.emit()
 
+    def _on_era_changed(self):
+        """元号/西暦を切り替えても同じ年を指すように年の数字を換算する"""
+        new_era = self.era_combo.currentText()
+        seireki_year = wareki_to_seireki(self._era, self.year_spin.value())
+        self._era = new_era
+        self.year_spin.blockSignals(True)
+        self._update_year_range()
+        self.year_spin.setValue(seireki_year - wareki_to_seireki(new_era, 0))
+        self.year_spin.blockSignals(False)
+        self._on_month_changed()
+
+    def _update_year_range(self):
+        self.year_spin.setRange(1, 9999 if self.era_combo.currentText() == SEIREKI else 99)
+
     def _update_day_range(self):
         """年・月に応じて日のSpinBoxの上限を調整"""
-        era_name = self.era_combo.currentText()
-        wy = self.year_spin.value()
-        sy = wareki_to_seireki(era_name, wy)
         m = self.month_spin.value()
         try:
-            max_day = calendar.monthrange(sy, m)[1]
+            max_day = calendar.monthrange(self._seireki_year(), m)[1]
         except ValueError:
             max_day = 31
         self.day_spin.setMaximum(max_day)
 
     def _update_seireki_label(self):
         d = self.get_date()
-        if d:
-            self.seireki_label.setText(f"({d.strftime('%Y/%m/%d')})")
+        if d is None:
+            self.seireki_label.setText("(無効な日付・元号の範囲外)")
+        elif self.era_combo.currentText() == SEIREKI:
+            era_name, wy = seireki_to_wareki(d)
+            self.seireki_label.setText("" if era_name == SEIREKI else f"(＝ {era_name}{wy}年)")
         else:
-            self.seireki_label.setText("(無効な日付)")
+            self.seireki_label.setText(f"({d.strftime('%Y/%m/%d')})")
 
     def _block_signals(self, block: bool):
         self.era_combo.blockSignals(block)
@@ -217,7 +245,7 @@ class AboutDialog(QDialog):
         "・端数処理: 各区間切り捨て/合算後切り捨て\n"
         "  （東京地裁執行部方式）の選択\n"
         "・法定利率プリセットボタン（3%/5%/6%/14.6%）\n"
-        "・和暦入力対応（令和・平成・昭和）\n"
+        "・和暦（令和・平成・昭和）と西暦のどちらでも日付入力可能\n"
         "・計算過程の詳細明細表示\n"
         "・ワンクリックで計算結果をコピー\n\n\n"
         "■ 動作環境\n"
@@ -232,8 +260,10 @@ class AboutDialog(QDialog):
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "1. 元本（円）を入力\n"
         "2. 年利（%）を入力、またはプリセットボタンをクリック\n"
-        "3. 起算日を和暦で入力（元号・年・月・日）\n"
-        "4. 支払日を和暦で入力（「今日」ボタンで当日に設定可能）\n"
+        "3. 起算日を入力（元号または西暦・年・月・日）\n"
+        "   判決の「○日から支払済みまで」の日をそのまま入力します\n"
+        "   （初日は「算入」がデフォルトです）\n"
+        "4. 支払日を入力（「今日」ボタンで当日に設定可能）\n"
         "5. 必要に応じて設定を変更\n"
         "   ・初日算入/不算入\n"
         "   ・閏年考慮/無視\n"
@@ -319,7 +349,7 @@ class AboutDialog(QDialog):
         about_text.setReadOnly(True)
         about_text.setFont(QFont("Yu Gothic UI", 9))
         about_text.setPlainText(
-            "遅延損害金計算機  v1.0.0\n\n"
+            f"遅延損害金計算機  v{APP_VERSION}\n\n"
             "裁判所方式（端数期間暦年閏年説）準拠の\n"
             "遅延損害金計算ツールです。\n"
             "判決後の振込額計算に特化しています。\n\n"
@@ -420,14 +450,14 @@ class MainWindow(QMainWindow):
         input_layout.addWidget(QLabel("元本（円）:"), 0, 0)
         self.principal_edit = QLineEdit()
         self.principal_edit.setPlaceholderText("例: 1000000")
-        self.principal_edit.setValidator(QIntValidator(0, 2147483647))
+        self.principal_edit.setValidator(QRegularExpressionValidator(QRegularExpression(r"[0-9,]{0,16}")))
         input_layout.addWidget(self.principal_edit, 0, 1, 1, 2)
 
         # 利率
         input_layout.addWidget(QLabel("年利（%）:"), 1, 0)
         self.rate_edit = QLineEdit()
         self.rate_edit.setPlaceholderText("例: 3")
-        self.rate_edit.setValidator(QDoubleValidator(0.0, 100.0, 4))
+        self.rate_edit.setValidator(QRegularExpressionValidator(QRegularExpression(r"\d{0,3}(\.\d{0,4})?")))
         input_layout.addWidget(self.rate_edit, 1, 1)
 
         # プリセットボタン
@@ -467,14 +497,16 @@ class MainWindow(QMainWindow):
         # 初日算入/不算入
         settings_layout.addWidget(QLabel("初日:"), 0, 0)
         self.first_day_group = QButtonGroup()
-        self.rb_exclude = QRadioButton("不算入（デフォルト）")
-        self.rb_include = QRadioButton("算入")
-        self.rb_exclude.setChecked(True)
-        self.first_day_group.addButton(self.rb_exclude, 0)
-        self.first_day_group.addButton(self.rb_include, 1)
+        self.rb_include = QRadioButton("算入（デフォルト）")
+        self.rb_exclude = QRadioButton("不算入")
+        self.rb_include.setChecked(True)
+        self.rb_include.setToolTip("起算日当日から遅延損害金を数えます（判決の「○日から支払済みまで」の日をそのまま入力する場合）")
+        self.rb_exclude.setToolTip("起算日の翌日から数えます")
+        self.first_day_group.addButton(self.rb_include, 0)
+        self.first_day_group.addButton(self.rb_exclude, 1)
         fd_layout = QHBoxLayout()
-        fd_layout.addWidget(self.rb_exclude)
         fd_layout.addWidget(self.rb_include)
+        fd_layout.addWidget(self.rb_exclude)
         fd_layout.addStretch()
         settings_layout.addLayout(fd_layout, 0, 1)
 
@@ -615,18 +647,26 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            rate_percent = float(rate_text.replace(",", ""))
-            rate = rate_percent / 100.0
+            rate_percent = float(rate_text)
         except ValueError:
             QMessageBox.warning(self, "入力エラー", "年利は数値で入力してください。")
             return
+        rate = rate_percent / 100.0
 
         if principal <= 0:
-            QMessageBox.warning(self, "入力エラー", "元本は正の値を入力してください。")
+            QMessageBox.warning(self, "入力エラー", "元本は正の整数で入力してください。")
             return
 
-        if rate <= 0:
+        if principal > MAX_PRINCIPAL:
+            QMessageBox.warning(self, "入力エラー", f"元本は{MAX_PRINCIPAL:,}円以下で入力してください。")
+            return
+
+        if rate_percent <= 0:
             QMessageBox.warning(self, "入力エラー", "年利は正の値を入力してください。")
+            return
+
+        if rate_percent > MAX_RATE_PERCENT:
+            QMessageBox.warning(self, "入力エラー", f"年利は{MAX_RATE_PERCENT}%以下で入力してください。")
             return
 
         start_date = self.start_date_widget.get_date()
@@ -640,11 +680,17 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "入力エラー", "支払日が無効です。日付を確認してください。")
             return
 
-        if start_date >= end_date:
+        include_first_day = self.rb_include.isChecked()
+
+        # 初日算入なら起算日当日の支払（1日分）も計算できる
+        if include_first_day and start_date > end_date:
+            QMessageBox.warning(self, "入力エラー", "支払日は起算日以降の日付にしてください。")
+            return
+
+        if not include_first_day and start_date >= end_date:
             QMessageBox.warning(self, "入力エラー", "支払日は起算日より後の日付にしてください。")
             return
 
-        include_first_day = self.rb_include.isChecked()
         consider_leap = self.rb_leap_yes.isChecked()
         truncate_each = self.rb_trunc_each.isChecked()
 
@@ -669,7 +715,7 @@ class MainWindow(QMainWindow):
         header = (
             f"遅延損害金: {result.delay_interest:,}円\n"
             f"合計振込額: {result.total_payment:,}円\n"
-            f"{'─' * 30}\n"
+            f"{'─' * 22}\n"
         )
         self.detail_text.setPlainText(header + result.detail_text)
 
@@ -679,7 +725,7 @@ class MainWindow(QMainWindow):
         today = date.today()
         self.start_date_widget.set_date(one_year_before(today))
         self.end_date_widget.set_date(today)
-        self.rb_exclude.setChecked(True)
+        self.rb_include.setChecked(True)
         self.rb_leap_yes.setChecked(True)
         self.rb_trunc_each.setChecked(True)
         self.lbl_delay.setText("―")

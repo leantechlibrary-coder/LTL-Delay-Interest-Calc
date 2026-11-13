@@ -1,15 +1,14 @@
 /*
  * 遅延損害金計算エンジン (JavaScript port)
  * 裁判所方式（端数期間暦年閏年説）準拠
- * Python版 calc_engine.py と数値完全一致を検証済み
+ * calc_engine.py と同じ結果・同じ明細文を返す（tests/check_engines.py で照合）
  *
  * 計算式:
  *   特約なし: 元本 × 年利 × (年 + 平年日÷365 + 閏年日÷366)
  *   年365日日割: 元本 × 年利 × 総日数÷365
  *
- * 端数処理（円未満切り捨て）は BigInt の整数演算で厳密に行う。
- *   浮動小数点のままだと、例えば 1,137,049.4 + 258,561.9 + 12,426.7 が
- *   1,408,037.999… になって切り捨てで1円少なくなる。amount* は表示用。
+ * 金額はすべて BigInt の整数演算で厳密に切り捨てる（浮動小数点の誤差で1円ずれないように）。
+ *   明細に出す各区間の金額は小数第2位以下を切り捨てた値（四捨五入しない）。
  *
  * Copyright (c) 2026 Lean Tech Library
  * License: AGPL-3.0
@@ -87,32 +86,36 @@
   }
 
   function fmtYen(n) {
-    return Math.trunc(n).toLocaleString("ja-JP");
-  }
-
-  function fmtNum1(x) {
-    // Python の f"{x:,.1f}" 相当（小数1位固定・桁区切り）
-    const neg = x < 0;
-    const v = Math.abs(x);
-    const s = v.toFixed(1);
-    const [int_, frac] = s.split(".");
-    const grouped = int_.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-    return (neg ? "-" : "") + grouped + "." + frac;
+    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   }
 
   // ---- 厳密な切り捨て（整数演算） ----
-  // 年利は 10^6 分の整数に戻す（画面の利率は％で小数4桁まで → 年利で小数6桁まで）
+  // 年利は 10^6 分の整数で持つ（％で小数4桁まで）
   const RATE_DEN = 1000000n;
   function rateNum(rate) {
-    return BigInt(Math.round(rate * 1000000));
+    return Math.round(rate * 1000000);
   }
-  // floor(元本 × 年利 × 日数 × scale ÷ 分母)。元本・日数は非負の整数
-  function floorTerm(principal, rate, days, denom, scale) {
-    const n = BigInt(Math.round(principal)) * rateNum(rate) * BigInt(days) * BigInt(scale);
-    return Number(n / (RATE_DEN * BigInt(denom)));
+  // 10^6 分の整数の年利を ％ 表記にする。30000 → "3"、146000 → "14.6"
+  function fmtRate(num) {
+    const whole = Math.floor(num / 10000);
+    const frac = String(num % 10000).padStart(4, "0").replace(/0+$/, "");
+    return frac ? `${whole}.${frac}` : String(whole);
+  }
+  // 金額の途中計算は BigInt（10倍した整数＝小数1位まで）で持つ
+  function yenOf(tenths) {
+    return Number(tenths / 10n);
+  }
+  // 10倍した整数を小数1位の金額表記にする。81967n → "8,196.7"
+  function fmtTenths(tenths) {
+    return `${fmtYen(tenths / 10n)}.${tenths % 10n}`;
+  }
+  // floor(元本 × 年利 × 日数 × 10 ÷ 分母)
+  function floorTenths(principal, num, days, denom) {
+    const n = BigInt(principal) * BigInt(num) * BigInt(days) * 10n;
+    return n / (RATE_DEN * BigInt(denom));
   }
 
-  // ---- エンジン本体（calc_engine.py と同一構造・同一演算順序） ----
+  // ---- エンジン本体（calc_engine.py と同じ結果・同じ明細文を返す） ----
 
   // 計算開始日から years 年の期間が満了する日（その日を含む）。民法143条2項:
   // 応当日の前日に満了。2/29 開始で応当日がない年は、その月の末日（2/28）に満了。
@@ -131,9 +134,8 @@
     return [fullYears, addDays(fullYearEnd(effectiveStart, fullYears), 1)];
   }
 
+  // 端数期間（両端を含む）を暦年ごとに平年/閏年の日数に分ける
   function splitDaysByLeap(remainderStart, endDate) {
-    if (cmp(remainderStart, endDate) > 0) return [0, 0];
-
     let normalDays = 0;
     let leapDays = 0;
     let current = remainderStart;
@@ -161,14 +163,12 @@
    * @param {boolean} p.includeFirstDay 初日算入
    * @param {boolean} p.considerLeap    閏年考慮（false = 年365日日割特約）
    * @param {boolean} p.truncateEach    各区間ごと切り捨て（false = 東京地裁執行部方式）
-   * @param {string}  [p.ratePercentText] 明細表示用の利率文字列（例 "3"）
    */
   function calculate(p) {
     const {
       principal, rate, startDate, endDate,
-      includeFirstDay = false, considerLeap = true, truncateEach = true,
+      includeFirstDay = true, considerLeap = true, truncateEach = true,
     } = p;
-    const rateText = p.ratePercentText != null ? p.ratePercentText : String(rate * 100);
 
     let effectiveStart, totalDays;
     if (includeFirstDay) {
@@ -188,11 +188,13 @@
       return {
         ...base,
         fullYears: 0, normalDays: 0, leapDays: 0, totalDays: 0,
-        amountYears: 0, amountNormal: 0, amountLeap: 0,
         delayInterest: 0, totalPayment: principal,
         detailText: "期間が0日以下です。",
       };
     }
+
+    const num = rateNum(rate);
+    const rateText = fmtRate(num);
 
     const details = [];
     details.push(`元本: ${fmtYen(principal)}円`);
@@ -203,95 +205,77 @@
     details.push(`総日数: ${totalDays}日`);
     details.push("");
 
+    let fullYears, normalDays, leapDays, delayInterest;
+
     if (!considerLeap) {
-      const amountTotal = principal * rate * totalDays / 365;
+      const tenths = floorTenths(principal, num, totalDays, 365);
+      delayInterest = yenOf(tenths);
       details.push("【計算方法: 年365日日割特約（閏年無視）】");
-      details.push(`  ${fmtYen(principal)} × ${rateText}% × ${totalDays}/365 = ${fmtNum1(amountTotal)}`);
-      const delayInterest = floorTerm(principal, rate, totalDays, 365, 1);
-      details.push(`  遅延損害金: ${fmtYen(delayInterest)}円`);
-      details.push(`  合計振込額: ${fmtYen(principal + delayInterest)}円`);
-
-      return {
-        ...base,
-        fullYears: 0, normalDays: totalDays, leapDays: 0, totalDays,
-        amountYears: 0, amountNormal: amountTotal, amountLeap: 0,
-        delayInterest,
-        totalPayment: principal + delayInterest,
-        detailText: details.join("\n"),
-      };
-    }
-
-    const [fullYears, remainderStart] = countFullYears(effectiveStart, endDate);
-    const [normalDays, leapDays] = splitDaysByLeap(remainderStart, endDate);
-    const amountYears = principal * rate * fullYears;
-    const amountNormal = normalDays > 0 ? principal * rate * normalDays / 365 : 0.0;
-    const amountLeap = leapDays > 0 ? principal * rate * leapDays / 366 : 0.0;
-
-    details.push("【計算方法: 特約なし（端数期間暦年閏年説）】");
-    details.push(`  年に満つる期間: ${fullYears}年`);
-    if (fullYears > 0) {
-      details.push(`    ${fmtDate(effectiveStart)} → ${fmtDate(fullYearEnd(effectiveStart, fullYears))}`);
-    }
-    if (cmp(remainderStart, endDate) <= 0) {
-      details.push(`  端数期間: ${fmtDate(remainderStart)} → ${fmtDate(endDate)}`);
+      details.push(
+        `  ${fmtYen(principal)} × ${rateText}% × ${totalDays}/365 = ${fmtTenths(tenths)}` +
+        ` → 円未満切り捨て ${fmtYen(delayInterest)}円`
+      );
+      [fullYears, normalDays, leapDays] = [0, totalDays, 0];
     } else {
-      details.push("  端数期間: なし");
-    }
-    details.push(`    平年日数: ${normalDays}日, 閏年日数: ${leapDays}日`);
-    details.push("");
+      let remainderStart;
+      [fullYears, remainderStart] = countFullYears(effectiveStart, endDate);
+      [normalDays, leapDays] = splitDaysByLeap(remainderStart, endDate);
+      // 各区間の金額を10倍した整数（＝小数1位まで、第2位以下切り捨て）
+      const ty = floorTenths(principal, num, fullYears, 1);
+      const tn = floorTenths(principal, num, normalDays, 365);
+      const tl = floorTenths(principal, num, leapDays, 366);
 
-    if (fullYears > 0) {
-      details.push(`  ① 年単位: ${fmtYen(principal)} × ${rateText}% × ${fullYears} = ${fmtNum1(amountYears)}`);
-    } else {
-      details.push("  ① 年単位: なし");
-    }
-    if (normalDays > 0) {
-      details.push(`  ② 平年分: ${fmtYen(principal)} × ${rateText}% × ${normalDays}/365 = ${fmtNum1(amountNormal)}`);
-    } else {
-      details.push("  ② 平年分: なし");
-    }
-    if (leapDays > 0) {
-      details.push(`  ③ 閏年分: ${fmtYen(principal)} × ${rateText}% × ${leapDays}/366 = ${fmtNum1(amountLeap)}`);
-    } else {
-      details.push("  ③ 閏年分: なし");
-    }
-
-    let delayInterest;
-    if (truncateEach) {
-      const fy = floorTerm(principal, rate, fullYears, 1, 1);
-      const fn = floorTerm(principal, rate, normalDays, 365, 1);
-      const fl = floorTerm(principal, rate, leapDays, 366, 1);
-      delayInterest = fy + fn + fl;
+      details.push("【計算方法: 特約なし（端数期間暦年閏年説）】");
+      details.push(`  年に満つる期間: ${fullYears}年`);
+      if (fullYears > 0) {
+        details.push(`    ${fmtDate(effectiveStart)} → ${fmtDate(fullYearEnd(effectiveStart, fullYears))}`);
+      }
+      if (cmp(remainderStart, endDate) <= 0) {
+        details.push(`  端数期間: ${fmtDate(remainderStart)} → ${fmtDate(endDate)}`);
+      } else {
+        details.push("  端数期間: なし");
+      }
+      details.push(`    平年日数: ${normalDays}日, 閏年日数: ${leapDays}日`);
       details.push("");
-      const parts = [];
-      if (fullYears > 0) parts.push(`①${fmtYen(fy)}`);
-      if (normalDays > 0) parts.push(`②${fmtYen(fn)}`);
-      if (leapDays > 0) parts.push(`③${fmtYen(fl)}`);
-      details.push(`  各区間切り捨て: ${parts.join(" + ")}`);
-    } else {
-      // 東京地裁執行部方式: 各区間を小数第2位切り捨て → 合算 → 円未満切り捨て
-      // 各区間を10倍した整数（＝小数1位まで）で持って合算し、最後に10で割って切り捨て
-      const ty = floorTerm(principal, rate, fullYears, 1, 10);
-      const tn = floorTerm(principal, rate, normalDays, 365, 10);
-      const tl = floorTerm(principal, rate, leapDays, 366, 10);
-      const ry = ty / 10, rn = tn / 10, rl = tl / 10;
-      const rawTotal = (ty + tn + tl) / 10;
-      delayInterest = Math.floor((ty + tn + tl) / 10);
-      details.push("");
-      const parts = [];
-      if (fullYears > 0) parts.push(`①${fmtNum1(ry)}`);
-      if (normalDays > 0) parts.push(`②${fmtNum1(rn)}`);
-      if (leapDays > 0) parts.push(`③${fmtNum1(rl)}`);
-      details.push(`  合算(小数1位): ${parts.join(" + ")} = ${fmtNum1(rawTotal)}`);
-    }
 
-    details.push(`  遅延損害金: ${fmtYen(delayInterest)}円`);
-    details.push(`  合計振込額: ${fmtYen(principal + delayInterest)}円`);
+      if (fullYears > 0) {
+        details.push(`  ① 年単位: ${fmtYen(principal)} × ${rateText}% × ${fullYears} = ${fmtTenths(ty)}`);
+      } else {
+        details.push("  ① 年単位: なし");
+      }
+      if (normalDays > 0) {
+        details.push(`  ② 平年分: ${fmtYen(principal)} × ${rateText}% × ${normalDays}/365 = ${fmtTenths(tn)}`);
+      } else {
+        details.push("  ② 平年分: なし");
+      }
+      if (leapDays > 0) {
+        details.push(`  ③ 閏年分: ${fmtYen(principal)} × ${rateText}% × ${leapDays}/366 = ${fmtTenths(tl)}`);
+      } else {
+        details.push("  ③ 閏年分: なし");
+      }
+      details.push("");
+
+      const used = [[fullYears, "①", ty], [normalDays, "②", tn], [leapDays, "③", tl]].filter((u) => u[0] > 0);
+      if (truncateEach) {
+        // 各区間ごとに円未満切り捨て
+        delayInterest = yenOf(ty) + yenOf(tn) + yenOf(tl);
+        const parts = used.map(([, mark, t]) => `${mark}${fmtYen(yenOf(t))}`);
+        details.push(`  各区間切り捨て: ${parts.join(" + ")} = ${fmtYen(delayInterest)}円`);
+      } else {
+        // 東京地裁執行部方式: 各区間を小数第2位で切り捨て → 合算 → 円未満切り捨て
+        const totalTenths = ty + tn + tl;
+        delayInterest = yenOf(totalTenths);
+        const parts = used.map(([, mark, t]) => `${mark}${fmtTenths(t)}`);
+        details.push(
+          `  合算(小数1位): ${parts.join(" + ")} = ${fmtTenths(totalTenths)}` +
+          ` → 円未満切り捨て ${fmtYen(delayInterest)}円`
+        );
+      }
+    }
 
     return {
       ...base,
       fullYears, normalDays, leapDays, totalDays,
-      amountYears, amountNormal, amountLeap,
       delayInterest,
       totalPayment: principal + delayInterest,
       detailText: details.join("\n"),

@@ -4,7 +4,7 @@
  *   - オフライン時はキャッシュ済みの版で動作
  * 更新手順: アプリを更新したら下の CACHE_VERSION を必ず上げること。
  */
-const CACHE_VERSION = "entai-calc-v1.3.2";
+const CACHE_VERSION = "entai-calc-v1.4.0";
 
 const ASSETS = [
   "./",

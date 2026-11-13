@@ -3,10 +3,13 @@
 (function () {
   "use strict";
 
-  const APP_VERSION = "1.3.2";
+  const APP_VERSION = "1.4.0";
+  // 入力の上限（デスクトップ版 main.py と同じ値）
+  const MAX_PRINCIPAL = 999999999999;
+  const MAX_RATE_PERCENT = 100;
   const E = CalcEngine;
 
-  // ---- 元号（Python版 ERAS と同一定義 + 西暦直接入力） ----
+  // ---- 元号（デスクトップ版 main.py の ERAS と同一定義。新しい順） ----
   const ERAS = [
     { name: "令和", start: { y: 2019, m: 5, d: 1 }, offset: 2018 },
     { name: "平成", start: { y: 1989, m: 1, d: 8 }, offset: 1988 },
@@ -19,11 +22,17 @@
     return era ? wy + era.offset : wy;
   }
 
+  // 西暦の日付 → [元号名, 和暦年]。昭和より前は ["西暦", 西暦年]
   function seirekiToWareki(dt) {
     for (const e of ERAS) {
       if (E.cmp(dt, e.start) >= 0) return [e.name, dt.y - e.offset];
     }
-    return ["昭和", dt.y - 1925];
+    return ["西暦", dt.y];
+  }
+
+  // dt がその元号の期間内か（例: 令和1年1月1日は平成なので false）
+  function inEra(eraName, dt) {
+    return eraName === "西暦" || seirekiToWareki(dt)[0] === eraName;
   }
 
   // ---- 和暦日付ウィジェット ----
@@ -66,12 +75,13 @@
       if (wy < 1 || wy > (era.value === "西暦" ? 9999 : 99)) return null;
       const sy = warekiToSeireki(era.value, wy);
       if (!E.isValidDate(sy, m, d)) return null;
-      return { y: sy, m, d };
+      const dt = { y: sy, m, d };
+      return inEra(era.value, dt) ? dt : null;
     }
 
     function setDate(dt) {
       const [eraName, wy] = seirekiToWareki(dt);
-      era.value = eraName;
+      era.value = prevEra = eraName;
       yy.value = wy;
       mm.value = dt.m;
       dd.value = dt.d;
@@ -82,15 +92,26 @@
       const dt = getDate();
       if (dt) {
         const [en, wy] = seirekiToWareki(dt);
-        // 昭和より前（wy < 1）は対応する元号を持っていないので和暦は出さない
-        const w = era.value === "西暦" && wy >= 1 ? `${en}${wy}年` : "";
+        // 昭和より前は対応する元号を持っていないので和暦は出さない
+        const w = era.value === "西暦" && en !== "西暦" ? `${en}${wy}年` : "";
         seirekiLabel.textContent = `（${dt.y}/${String(dt.m).padStart(2, "0")}/${String(dt.d).padStart(2, "0")}${w ? " ＝ " + w : ""}）`;
         seirekiLabel.classList.remove("bad");
       } else {
-        seirekiLabel.textContent = "（無効な日付）";
+        seirekiLabel.textContent = "（無効な日付・元号の範囲外）";
         seirekiLabel.classList.add("bad");
       }
     }
+
+    // 元号/西暦を切り替えても同じ年を指すように年の数字を換算する
+    let prevEra = era.value;
+    era.addEventListener("change", () => {
+      const wy = parseInt(yy.value, 10);
+      if (Number.isInteger(wy)) {
+        const converted = warekiToSeireki(prevEra, wy) - warekiToSeireki(era.value, 0);
+        if (converted >= 1) yy.value = converted;
+      }
+      prevEra = era.value;
+    });
 
     for (const el of [era, yy, mm, dd]) {
       el.addEventListener("input", update);
@@ -150,7 +171,7 @@
       },
     };
   }
-  const segFirst = seg("segFirst"); // true = 算入
+  const segFirst = seg("segFirst"); // true = 算入（既定）
   const segLeap = seg("segLeap");   // true = 考慮
   const segTrunc = seg("segTrunc"); // true = 各区間切捨て
 
@@ -192,7 +213,8 @@
     if (!pText) return showError("元本を入力してください。");
     if (!/^\d+$/.test(pText)) return showError("元本は整数で入力してください。");
     const principal = Number(pText);
-    if (!Number.isSafeInteger(principal) || principal <= 0) return showError("元本は正の整数で入力してください。");
+    if (principal <= 0) return showError("元本は正の整数で入力してください。");
+    if (principal > MAX_PRINCIPAL) return showError(`元本は${E.fmtYen(MAX_PRINCIPAL)}円以下で入力してください。`);
 
     const rText = rateEl.value.replace(/[,，\s]/g, "");
     if (!rText) return showError("年利を入力してください。");
@@ -201,22 +223,25 @@
     if (/\.\d{5,}$/.test(rText)) return showError("年利は小数第4位までで入力してください。");
     const ratePercent = Number(rText);
     if (ratePercent <= 0) return showError("年利は正の値を入力してください。");
+    if (ratePercent > MAX_RATE_PERCENT) return showError(`年利は${MAX_RATE_PERCENT}%以下で入力してください。`);
 
     const startDate = startW.getDate();
     const endDate = endW.getDate();
     if (!startDate) return showError("起算日が無効です。日付を確認してください。");
     if (!endDate) return showError("支払日が無効です。日付を確認してください。");
-    if (E.cmp(startDate, endDate) >= 0) return showError("支払日は起算日より後の日付にしてください。");
+    // 初日算入なら起算日当日の支払（1日分）も計算できる
+    const includeFirstDay = segFirst.value;
+    if (includeFirstDay && E.cmp(startDate, endDate) > 0) return showError("支払日は起算日以降の日付にしてください。");
+    if (!includeFirstDay && E.cmp(startDate, endDate) >= 0) return showError("支払日は起算日より後の日付にしてください。");
 
     const r = E.calculate({
       principal,
       rate: ratePercent / 100.0,
       startDate,
       endDate,
-      includeFirstDay: segFirst.value,
+      includeFirstDay,
       considerLeap: segLeap.value,
       truncateEach: segTrunc.value,
-      ratePercentText: rText,
     });
 
     delayEl.innerHTML = `${E.fmtYen(r.delayInterest)}<span class="unit">円</span>`;
@@ -242,7 +267,7 @@
     presetDates = { start: oneYearAgo(), end: todayDate() };
     startW.setDate(presetDates.start);
     endW.setDate(presetDates.end);
-    segFirst.reset(false);
+    segFirst.reset(true);
     segLeap.reset(true);
     segTrunc.reset(true);
     delayEl.textContent = "―";

@@ -252,10 +252,10 @@ dialog .dfoot button {
   <h2>設定</h2>
 
   <div class="field">
-    <label class="flabel">初日</label>
+    <label class="flabel">初日（起算日当日を数えるか）</label>
     <div class="seg" id="segFirst" role="group">
-      <button type="button" data-v="0" aria-pressed="true">不算入（原則）</button>
-      <button type="button" data-v="1" aria-pressed="false">算入</button>
+      <button type="button" data-v="1" aria-pressed="true">算入（既定）</button>
+      <button type="button" data-v="0" aria-pressed="false">不算入</button>
     </div>
   </div>
 
@@ -320,6 +320,8 @@ dialog .dfoot button {
       <li><b>特約なし（原則）</b>：元本 × 年利 ×（年数 ＋ 平年日÷365 ＋ 閏年日÷366）。年に満つる期間は年単位、端数期間は暦年ごとに平年／閏年を判定します。</li>
       <li><b>年365日日割特約</b>：元本 × 年利 × 総日数÷365</li>
     </ul>
+    <h3>起算日と初日</h3>
+    <p>判決の「○日から支払済みまで」の日をそのまま起算日に入力します（初日は「算入」が既定）。起算日の翌日から数える場合は「不算入」を選びます。</p>
     <h3>法定利率の変遷（参考）</h3>
     <ul>
       <li>〜令和2年3月31日：年5%（旧民法）／旧商事法定利率 年6%</li>
