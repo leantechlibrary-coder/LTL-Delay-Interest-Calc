@@ -68,8 +68,7 @@
     return { y, m, d };
   }
 
-  // dateutil.relativedelta(years=n) と同一挙動:
-  // 応当日が存在しない場合（2/29 → 平年）は月末（2/28）に丸める
+  // n年後（前）の同じ月日。応当日が存在しない場合（2/29 → 平年）は月末（2/28）に丸める
   function addYears(dt, n) {
     const y = dt.y + n;
     const d = Math.min(dt.d, daysInMonth(y, dt.m));
@@ -115,17 +114,25 @@
 
   // ---- エンジン本体（calc_engine.py と同一構造・同一演算順序） ----
 
+  // 計算開始日から years 年の期間が満了する日（その日を含む）。民法143条2項:
+  // 応当日の前日に満了。2/29 開始で応当日がない年は、その月の末日（2/28）に満了。
+  function fullYearEnd(effectiveStart, years) {
+    const y = effectiveStart.y + years;
+    if (effectiveStart.d > daysInMonth(y, effectiveStart.m)) return { y, m: 2, d: 28 };
+    return addDays({ y, m: effectiveStart.m, d: effectiveStart.d }, -1);
+  }
+
   function countFullYears(effectiveStart, endDate) {
     let fullYears = 0;
-    while (cmp(addYears(effectiveStart, fullYears + 1), endDate) <= 0) {
+    while (cmp(fullYearEnd(effectiveStart, fullYears + 1), endDate) <= 0) {
       fullYears += 1;
     }
-    const remainderStart = addYears(effectiveStart, fullYears);
-    return [fullYears, remainderStart];
+    if (fullYears === 0) return [0, effectiveStart];
+    return [fullYears, addDays(fullYearEnd(effectiveStart, fullYears), 1)];
   }
 
   function splitDaysByLeap(remainderStart, endDate) {
-    if (cmp(remainderStart, endDate) >= 0) return [0, 0];
+    if (cmp(remainderStart, endDate) > 0) return [0, 0];
 
     let normalDays = 0;
     let leapDays = 0;
@@ -196,8 +203,6 @@
     details.push(`総日数: ${totalDays}日`);
     details.push("");
 
-    const [fullYears, remainderStart] = countFullYears(effectiveStart, endDate);
-
     if (!considerLeap) {
       const amountTotal = principal * rate * totalDays / 365;
       details.push("【計算方法: 年365日日割特約（閏年無視）】");
@@ -216,6 +221,7 @@
       };
     }
 
+    const [fullYears, remainderStart] = countFullYears(effectiveStart, endDate);
     const [normalDays, leapDays] = splitDaysByLeap(remainderStart, endDate);
     const amountYears = principal * rate * fullYears;
     const amountNormal = normalDays > 0 ? principal * rate * normalDays / 365 : 0.0;
@@ -224,10 +230,13 @@
     details.push("【計算方法: 特約なし（端数期間暦年閏年説）】");
     details.push(`  年に満つる期間: ${fullYears}年`);
     if (fullYears > 0) {
-      const yearEndDate = addDays(addYears(effectiveStart, fullYears), -1);
-      details.push(`    ${fmtDate(effectiveStart)} → ${fmtDate(yearEndDate)}`);
+      details.push(`    ${fmtDate(effectiveStart)} → ${fmtDate(fullYearEnd(effectiveStart, fullYears))}`);
     }
-    details.push(`  端数期間: ${fmtDate(remainderStart)} → ${fmtDate(endDate)}`);
+    if (cmp(remainderStart, endDate) <= 0) {
+      details.push(`  端数期間: ${fmtDate(remainderStart)} → ${fmtDate(endDate)}`);
+    } else {
+      details.push("  端数期間: なし");
+    }
     details.push(`    平年日数: ${normalDays}日, 閏年日数: ${leapDays}日`);
     details.push("");
 

@@ -7,10 +7,12 @@
   年365日日割: 元本 × 年利 × 総日数÷365
 
 日数カウント:
-  初日算入: 起算日そのまま。年計算は応当日で区切る。
-  初日不算入: 翌日を起算日とする。
-  端数期間の暦年分割: 最初のセグメントは起算日含む(+1)、
-                     以降は年初からのdate diff。
+  初日算入: 起算日そのまま。初日不算入: 翌日を計算開始日とする。
+  計算開始日・支払日はどちらも日数に含める。
+  年に満つる期間は応当日の前日に満了する（民法143条2項）。
+    例: 7/1 開始 → 翌年 6/30 で満1年、端数期間は 7/1 から。
+    2/29 開始で応当日がない年は、その月の末日（2/28）に満了する（同項ただし書）。
+  端数期間は暦年ごとに区切り、両端の日を含めて数える。
 
 端数処理（円未満切り捨て）は有理数（Fraction）で厳密に行う。
   浮動小数点のままだと、例えば 1,137,049.4 + 258,561.9 + 12,426.7 が
@@ -20,7 +22,6 @@
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-from dateutil.relativedelta import relativedelta
 import calendar
 import math
 from fractions import Fraction
@@ -56,22 +57,32 @@ def is_leap_year(year: int) -> bool:
     return calendar.isleap(year)
 
 
+def full_year_end(effective_start: date, years: int) -> date:
+    """計算開始日から years 年の期間が満了する日（その日を含む）。民法143条2項"""
+    year = effective_start.year + years
+    try:
+        return effective_start.replace(year=year) - timedelta(days=1)
+    except ValueError:
+        # 2/29 開始で応当日がない年 → その月の末日に満了
+        return date(year, 2, 28)
+
+
 def count_full_years(effective_start: date, end_date: date):
+    """年に満つる年数と、端数期間の開始日を返す"""
     full_years = 0
-    while effective_start + relativedelta(years=full_years + 1) <= end_date:
+    while full_year_end(effective_start, full_years + 1) <= end_date:
         full_years += 1
-    remainder_start = effective_start + relativedelta(years=full_years)
-    return full_years, remainder_start
+    if full_years == 0:
+        return 0, effective_start
+    return full_years, full_year_end(effective_start, full_years) + timedelta(days=1)
 
 
 def split_days_by_leap(remainder_start: date, end_date: date):
     """
-    端数期間を暦年ごとに平年/閏年に分割。
-    各セグメントは両端を含む日数(+1)で計算する。
-    ただし隣接セグメントの境界日(12/31と1/1)は重複しないよう、
-    各セグメントの起算日を含め終了日も含める方式。
+    端数期間（remainder_start〜end_date、両端を含む）を
+    暦年ごとに平年/閏年の日数に分ける。
     """
-    if remainder_start >= end_date:
+    if remainder_start > end_date:
         return 0, 0
 
     normal_days = 0
@@ -124,18 +135,16 @@ def calculate(
             detail_text="期間が0日以下です。"
         )
 
+    r = exact_rate(rate)
+
     details = []
     details.append(f"元本: {principal:,}円")
-    details.append(f"年利: {rate*100}%")
+    details.append(f"年利: {float(r * 100):g}%")
     details.append(f"起算日: {start_date} ({'初日算入' if include_first_day else '初日不算入'})")
     details.append(f"計算開始日: {effective_start}")
     details.append(f"支払日: {end_date}")
     details.append(f"総日数: {total_days}日")
     details.append("")
-
-    full_years, remainder_start = count_full_years(effective_start, end_date)
-
-    r = exact_rate(rate)
 
     if not consider_leap:
         exact_total = Fraction(principal) * r * total_days / 365
@@ -160,6 +169,7 @@ def calculate(
         )
 
     else:
+        full_years, remainder_start = count_full_years(effective_start, end_date)
         normal_days, leap_days = split_days_by_leap(remainder_start, end_date)
         exact_years = Fraction(principal) * r * full_years
         exact_normal = Fraction(principal) * r * normal_days / 365
@@ -171,9 +181,11 @@ def calculate(
         details.append("【計算方法: 特約なし（端数期間暦年閏年説）】")
         details.append(f"  年に満つる期間: {full_years}年")
         if full_years > 0:
-            year_end_date = effective_start + relativedelta(years=full_years) - timedelta(days=1)
-            details.append(f"    {effective_start} → {year_end_date}")
-        details.append(f"  端数期間: {remainder_start} → {end_date}")
+            details.append(f"    {effective_start} → {full_year_end(effective_start, full_years)}")
+        if remainder_start <= end_date:
+            details.append(f"  端数期間: {remainder_start} → {end_date}")
+        else:
+            details.append("  端数期間: なし")
         details.append(f"    平年日数: {normal_days}日, 閏年日数: {leap_days}日")
         details.append("")
 

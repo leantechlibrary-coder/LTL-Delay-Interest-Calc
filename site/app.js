@@ -3,7 +3,7 @@
 (function () {
   "use strict";
 
-  const APP_VERSION = "1.3.0";
+  const APP_VERSION = "1.3.2";
   const E = CalcEngine;
 
   // ---- 元号（Python版 ERAS と同一定義 + 西暦直接入力） ----
@@ -39,7 +39,7 @@
       era.appendChild(o);
     }
 
-    function numInput(label, min, max, width) {
+    function numInput(label, min, max) {
       const i = document.createElement("input");
       i.type = "number";
       i.inputMode = "numeric";
@@ -63,7 +63,7 @@
       const m = parseInt(mm.value, 10);
       const d = parseInt(dd.value, 10);
       if (!Number.isInteger(wy) || !Number.isInteger(m) || !Number.isInteger(d)) return null;
-      if (era.value !== "西暦" && (wy < 1 || wy > 99)) return null;
+      if (wy < 1 || wy > (era.value === "西暦" ? 9999 : 99)) return null;
       const sy = warekiToSeireki(era.value, wy);
       if (!E.isValidDate(sy, m, d)) return null;
       return { y: sy, m, d };
@@ -82,7 +82,8 @@
       const dt = getDate();
       if (dt) {
         const [en, wy] = seirekiToWareki(dt);
-        const w = era.value === "西暦" ? `${en}${wy}年` : "";
+        // 昭和より前（wy < 1）は対応する元号を持っていないので和暦は出さない
+        const w = era.value === "西暦" && wy >= 1 ? `${en}${wy}年` : "";
         seirekiLabel.textContent = `（${dt.y}/${String(dt.m).padStart(2, "0")}/${String(dt.d).padStart(2, "0")}${w ? " ＝ " + w : ""}）`;
         seirekiLabel.classList.remove("bad");
       } else {
@@ -195,8 +196,10 @@
 
     const rText = rateEl.value.replace(/[,，\s]/g, "");
     if (!rText) return showError("年利を入力してください。");
+    if (!/^(\d+\.?\d*|\.\d+)$/.test(rText)) return showError("年利は数値で入力してください。");
+    // 計算エンジンは年利を小数4桁（％）までの値として厳密計算する（デスクトップ版と同じ上限）
+    if (/\.\d{5,}$/.test(rText)) return showError("年利は小数第4位までで入力してください。");
     const ratePercent = Number(rText);
-    if (!Number.isFinite(ratePercent)) return showError("年利は数値で入力してください。");
     if (ratePercent <= 0) return showError("年利は正の値を入力してください。");
 
     const startDate = startW.getDate();

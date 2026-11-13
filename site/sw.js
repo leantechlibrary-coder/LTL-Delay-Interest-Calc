@@ -4,7 +4,7 @@
  *   - オフライン時はキャッシュ済みの版で動作
  * 更新手順: アプリを更新したら下の CACHE_VERSION を必ず上げること。
  */
-const CACHE_VERSION = "entai-calc-v1.3.1";
+const CACHE_VERSION = "entai-calc-v1.3.2";
 
 const ASSETS = [
   "./",
@@ -42,13 +42,21 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     fetch(req)
       .then((res) => {
-        // 取得成功 → キャッシュを更新してから返す
-        const copy = res.clone();
-        caches.open(CACHE_VERSION).then((cache) => cache.put(req, copy));
+        // 正常に取得できたときだけキャッシュを更新する
+        // （404 や一時的なエラーページで、動いているキャッシュを上書きしない）
+        if (res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE_VERSION).then((cache) => cache.put(req, copy));
+        }
         return res;
       })
       .catch(() =>
-        caches.match(req).then((hit) => hit || caches.match("./index.html"))
+        caches.match(req).then((hit) => {
+          if (hit) return hit;
+          // 画面遷移のときだけ index.html で代替する（JS や画像の代わりに HTML を返さない）
+          if (req.mode === "navigate") return caches.match("./index.html");
+          return Response.error();
+        })
       )
   );
 });

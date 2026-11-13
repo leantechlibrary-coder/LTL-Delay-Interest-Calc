@@ -3,16 +3,17 @@
 裁判所方式（端数期間暦年閏年説）準拠
 """
 
+import calendar
 import sys
-from datetime import date, datetime
+from datetime import date
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QLineEdit, QPushButton, QRadioButton,
-    QButtonGroup, QTextEdit, QGroupBox, QFrame, QMessageBox,
-    QSizePolicy, QSpacerItem, QComboBox, QSpinBox, QDialog, QMenuBar
+    QButtonGroup, QTextEdit, QGroupBox, QMessageBox,
+    QComboBox, QSpinBox, QDialog
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QIntValidator, QDoubleValidator, QClipboard, QAction
+from PyQt6.QtGui import QFont, QIntValidator, QDoubleValidator, QAction
 
 from calc_engine import calculate
 
@@ -23,6 +24,14 @@ ERAS = [
     ("平成", date(1989, 1, 8), 1988),
     ("昭和", date(1926, 12, 25), 1925),
 ]
+
+
+def one_year_before(d: date) -> date:
+    """1年前の同じ月日。2/29 で前年に同じ日がなければ 2/28"""
+    try:
+        return d.replace(year=d.year - 1)
+    except ValueError:
+        return date(d.year - 1, 2, 28)
 
 
 def wareki_to_seireki(era_name: str, wy: int) -> int:
@@ -93,8 +102,9 @@ class WarekiDateWidget(QWidget):
         self.set_date(initial_date)
 
         # シグナル接続
-        self.era_combo.currentIndexChanged.connect(self._on_value_changed)
-        self.year_spin.valueChanged.connect(self._on_value_changed)
+        # 年・元号が変わると2月の日数（閏年）も変わるので、月と同じく日の上限を更新する
+        self.era_combo.currentIndexChanged.connect(self._on_month_changed)
+        self.year_spin.valueChanged.connect(self._on_month_changed)
         self.month_spin.valueChanged.connect(self._on_month_changed)
         self.day_spin.valueChanged.connect(self._on_value_changed)
 
@@ -132,8 +142,7 @@ class WarekiDateWidget(QWidget):
         self.dateChanged.emit()
 
     def _update_day_range(self):
-        """月に応じて日のSpinBoxの上限を調整"""
-        import calendar
+        """年・月に応じて日のSpinBoxの上限を調整"""
         era_name = self.era_combo.currentText()
         wy = self.year_spin.value()
         sy = wareki_to_seireki(era_name, wy)
@@ -285,15 +294,6 @@ class AboutDialog(QDialog):
         "Website: https://www.riverbankcomputing.com/software/pyqt/\n\n"
         "ライセンス全文：https://www.gnu.org/licenses/gpl-3.0.txt\n\n\n"
         "================================================================================\n"
-        "2. python-dateutil\n"
-        "================================================================================\n\n"
-        "License: Apache License 2.0 / BSD 3-Clause\n"
-        "Copyright: Gustavo Niemeyer, Paul Ganssle\n"
-        "Website: https://github.com/dateutil/dateutil\n\n"
-        "Licensed under the Apache License, Version 2.0 and BSD 3-Clause License.\n"
-        "You may obtain a copy of the License at:\n"
-        "https://www.apache.org/licenses/LICENSE-2.0\n\n\n"
-        "================================================================================\n"
         "本ソフトウェアのライセンス\n"
         "================================================================================\n\n"
         "遅延損害金計算機\n"
@@ -444,8 +444,7 @@ class MainWindow(QMainWindow):
         # 起算日
         input_layout.addWidget(QLabel("起算日:"), 2, 0)
         today = date.today()
-        one_year_ago = date(today.year - 1, today.month, today.day)
-        self.start_date_widget = WarekiDateWidget(one_year_ago)
+        self.start_date_widget = WarekiDateWidget(one_year_before(today))
         input_layout.addWidget(self.start_date_widget, 2, 1, 1, 2)
 
         # 支払日
@@ -678,7 +677,7 @@ class MainWindow(QMainWindow):
         self.principal_edit.clear()
         self.rate_edit.clear()
         today = date.today()
-        self.start_date_widget.set_date(date(today.year - 1, today.month, today.day))
+        self.start_date_widget.set_date(one_year_before(today))
         self.end_date_widget.set_date(today)
         self.rb_exclude.setChecked(True)
         self.rb_leap_yes.setChecked(True)

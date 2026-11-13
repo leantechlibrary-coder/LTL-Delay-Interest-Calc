@@ -9,6 +9,7 @@ site/
 ├── app.js                UI ロジック
 ├── sw.js                 Service Worker（ネットワーク優先＋オフライン対応）
 ├── manifest.webmanifest  PWAマニフェスト
+├── _headers              Cloudflare Pages 用のセキュリティヘッダ
 └── icons/                アイコン一式
 ```
 
@@ -19,14 +20,13 @@ site/
 
 ### 方法A: GitHub連携（推奨・push即反映）
 
-1. このフォルダの中身をリポジトリに置く
-   （例: 既存リポジトリに `pwa/` ディレクトリを切る、または専用リポジトリ）
+1. このフォルダ（`site/`）をリポジトリに置く（本リポジトリでは直下の `site/`）
 2. Cloudflare ダッシュボード → Workers & Pages → Create → Pages →
    Connect to Git → リポジトリを選択
 3. ビルド設定:
    - Framework preset: **None**
    - Build command: **（空欄）**
-   - Build output directory: **`pwa/site`**（このフォルダの場所に合わせる）
+   - Build output directory: **`site`**（このフォルダの場所に合わせる）
 4. Deploy。`https://＜プロジェクト名＞.pages.dev` が発行される
    （カスタムドメインも Pages の設定から追加可能）
 
@@ -40,8 +40,8 @@ Workers & Pages → Create → Pages → **Upload assets** → このフォル�
 
 計算ロジック・画面を変更したら、**必ず両方のバージョンを上げる**:
 
-1. `app.js` の `APP_VERSION = "1.0.0"` → 新バージョンへ
-2. `sw.js` の `CACHE_VERSION = "entai-calc-v1.0.0"` → 同じ番号へ
+1. `app.js` の `APP_VERSION = "1.3.2"` → 新バージョンへ
+2. `sw.js` の `CACHE_VERSION = "entai-calc-v1.3.2"` → 同じ番号へ
 
 CACHE_VERSION を上げ忘れても、Service Worker はネットワーク優先方式のため
 オンライン利用者には新版が届くが、番号を揃えておくことで旧キャッシュが
@@ -53,11 +53,12 @@ CACHE_VERSION を上げ忘れても、Service Worker はネットワーク優先
 画面フッターと情報ダイアログに GitHub リポジトリへのリンクを設置済みなので、
 **公開リポジトリにこの PWA 版のソースも含めること**（site/ をそのまま置けば足りる）。
 
-## 検証済み事項（2026-07-07）
+## 検証済み事項（2026-11-13・v1.3.2）
 
-- 計算エンジン: Python 原本（calc_engine.py）と 3,128 ケースで
-  全項目（年数・平年日数・閏年日数・総日数・遅延損害金・合計額）完全一致
-  - 2/29 起算の応当日処理、閏年跨ぎ、超長期、両端数処理方式を含む
-- UI: 和暦/西暦入力、プリセット、設定切替、バリデーション、
-  クリア、コピー活性制御を headless テストで確認
-- sw.js の ASSETS 全ファイル実在、manifest アイコン実在、バージョン整合
+- 計算エンジン: Python 版（calc_engine.py）と calc.js が 199,872 ケースで
+  全項目（年数・平年日数・閏年日数・総日数・遅延損害金・合計額）完全一致。
+  年数・日数は、1日ずつ数える別実装とも全ケース一致
+  - 応当日とその前日の支払、2/29 開始、閏年跨ぎ、長期、両端数処理方式を含む
+- UI: ブラウザで計算・和暦/西暦入力・利率の入力チェック・情報ダイアログ・
+  Service Worker 登録・オフライン再読込を確認（CSP 違反・コンソールエラーなし）
+- 検証スクリプトはリポジトリに含めていない
